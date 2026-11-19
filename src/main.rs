@@ -24,7 +24,7 @@ use md_tui::{
 
 use crossterm::{
     cursor,
-    event::{self, Event},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -60,6 +60,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut terminal = ratatui::init();
+    if GENERAL_CONFIG.mouse_scroll {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+    }
 
     // create app and run it
     let tick_rate = Duration::from_millis(100);
@@ -67,6 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let res = run_app(&mut terminal, app, tick_rate);
 
     // restore terminal
+    let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
 
     if let Err(err) = res {
@@ -74,6 +78,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+/// Key presses as they are; the mouse wheel acts like the Up/Down arrow keys.
+fn key_event_from(event: Event) -> Option<KeyEvent> {
+    match event {
+        Event::Key(key) => Some(key),
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            MouseEventKind::ScrollDown => Some(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn run_app(terminal: &mut DefaultTerminal, mut app: App, tick_rate: Duration) -> io::Result<()> {
@@ -257,7 +274,7 @@ fn run_app(terminal: &mut DefaultTerminal, mut app: App, tick_rate: Duration) ->
             .unwrap_or_else(|| Duration::from_secs(0));
 
         if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
+            && let Some(key) = key_event_from(event::read()?)
         {
             if key.kind != event::KeyEventKind::Press {
                 continue;
@@ -805,7 +822,7 @@ fn open_editor(f: &mut Frame, app: &mut App, file_name: Option<&str>, source_lin
     };
 
     disable_raw_mode().unwrap();
-    execute!(io::stdout(), LeaveAlternateScreen).unwrap();
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture).unwrap();
     execute!(io::stdout(), cursor::Show).unwrap();
 
     let _ = std::process::Command::new(editor)
@@ -818,6 +835,9 @@ fn open_editor(f: &mut Frame, app: &mut App, file_name: Option<&str>, source_lin
     enable_raw_mode().expect("Failed to enable raw mode");
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
+    if GENERAL_CONFIG.mouse_scroll {
+        let _ = execute!(stdout, EnableMouseCapture);
+    }
 
     app.boxes = Boxes::None;
     f.render_widget(Clear, f.area());
