@@ -269,7 +269,8 @@ fn build_table_lines(content: &[Vec<Word>], widths: &[u16], heights: &[u16]) -> 
             row_style,
         ));
 
-        if row_i == 0 {
+        let is_last_row = (row_i + 1) * column_count >= content.len();
+        if row_i == 0 || (GENERAL_CONFIG.table_row_lines && !is_last_row) {
             lines.push(table_border_line(widths, "├", "┼", "┤"));
         }
     }

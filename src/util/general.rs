@@ -15,6 +15,7 @@ pub struct GeneralConfig {
     pub heading_style: HeadingStyle,
     pub file_tree_details: bool,
     pub scrollbar: bool,
+    pub table_row_lines: bool,
     pub image_max_height: u16,
     pub remember_position: bool,
     pub position_cache_ttl_minutes: u64,
@@ -78,6 +79,7 @@ fn general_config(settings: &Config) -> GeneralConfig {
             .unwrap_or(HeadingStyle::Hashes),
         file_tree_details: settings.get::<bool>("file_tree_details").unwrap_or(false),
         scrollbar: settings.get::<bool>("scrollbar").unwrap_or(true),
+        table_row_lines: settings.get::<bool>("table_row_lines").unwrap_or(false),
         image_max_height: settings.get::<u16>("image_max_height").unwrap_or(20).max(1),
         remember_position: settings.get::<bool>("remember_position").unwrap_or(true),
         position_cache_ttl_minutes: settings

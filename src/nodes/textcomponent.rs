@@ -488,7 +488,12 @@ impl TextComponent {
                 {
                     let offset = 1
                         + row_heights.iter().take(i).copied().sum::<u16>() as usize
-                        + usize::from(i > 0);
+                        + usize::from(i > 0)
+                        + if GENERAL_CONFIG.table_row_lines {
+                            i.saturating_sub(1)
+                        } else {
+                            0
+                        };
                     heights.push(offset);
                 }
             }
@@ -991,6 +996,16 @@ fn transform_list_with_width(component: &mut TextComponent, width: u16) {
     component.content = lines;
 }
 
+/// Lines drawn between body rows when `table_row_lines` is on. The header already has its own.
+#[must_use]
+pub fn table_row_separators(row_count: usize) -> u16 {
+    if GENERAL_CONFIG.table_row_lines {
+        row_count.saturating_sub(2) as u16
+    } else {
+        0
+    }
+}
+
 fn table_styling_width(column_count: usize) -> u16 {
     1 + column_count as u16 * (TABLE_CELL_PADDING * 2 + 1)
 }
@@ -1045,7 +1060,7 @@ fn transform_table(component: &mut TextComponent, width: u16) {
     // Return if unbalanced width fits //
     /////////////////////////////////////
     if width >= unbalanced_cells_width + styling_width {
-        component.height = row_count as u16 + 3;
+        component.height = row_count as u16 + 3 + table_row_separators(row_count);
         component.kind = TextNode::Table(widths, vec![1; row_count]);
         return;
     }
@@ -1074,7 +1089,7 @@ fn transform_table(component: &mut TextComponent, width: u16) {
     };
 
     if overflowing_columns.is_empty() {
-        component.height = row_count as u16 + 3;
+        component.height = row_count as u16 + 3 + table_row_separators(row_count);
         component.kind = TextNode::Table(widths, vec![1; row_count]);
         return;
     }
@@ -1135,7 +1150,8 @@ fn transform_table(component: &mut TextComponent, width: u16) {
         }
     }
 
-    component.height = heights.iter().copied().sum::<u16>() + 3;
+    component.height =
+        heights.iter().copied().sum::<u16>() + 3 + table_row_separators(heights.len());
 
     component.kind = TextNode::Table(widths_balanced, heights);
 }
