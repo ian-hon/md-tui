@@ -1,4 +1,10 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use image::ImageReader;
 use itertools::Itertools;
@@ -42,7 +48,26 @@ fn tag_owning_details(components: &mut [Component], id: u32) {
 #[grammar = "md.pest"]
 pub struct MdParser;
 
+/// Directory of the markdown file being parsed; relative image paths resolve against it, not the cwd.
+static IMAGE_BASE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn resolve_image_path(src: &str) -> PathBuf {
+    let path = Path::new(src);
+    match IMAGE_BASE_DIR.lock().ok().and_then(|base| base.clone()) {
+        Some(base) if path.is_relative() => base.join(path),
+        _ => path.to_path_buf(),
+    }
+}
+
 pub fn parse_markdown(name: Option<&str>, content: &str, width: u16) -> ComponentRoot {
+    let base = name
+        .map(Path::new)
+        .filter(|p| p.is_file())
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    if let Ok(mut slot) = IMAGE_BASE_DIR.lock() {
+        *slot = base;
+    }
     let root: Pairs<'_, Rule> = if let Ok(file) = MdParser::parse(Rule::txt, content) {
         file
     } else {
@@ -209,7 +234,7 @@ fn parse_component(parse_node: ParseNode, width: u16) -> Component {
                         image = None;
                     }
                 } else {
-                    image = ImageReader::open(node.content())
+                    image = ImageReader::open(resolve_image_path(node.content()))
                         .ok()
                         .and_then(|r| r.decode().ok());
                 }
@@ -1673,5 +1698,22 @@ mod tests {
             heading_text("##    Many   spaces   here\n"),
             "## Many spaces here"
         );
+    }
+
+    #[test]
+    fn image_paths_resolve_against_the_markdown_file_directory() {
+        let dir = std::env::temp_dir().join(format!("mdtui-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbImage::new(4, 4).save(dir.join("pic.png")).unwrap();
+        let md = dir.join("doc.md");
+        std::fs::write(&md, "![pic](pic.png)\n").unwrap();
+
+        let root = parse_markdown(md.to_str(), "![pic](pic.png)\n", 40);
+        let has_image = root
+            .children()
+            .iter()
+            .any(|c| matches!(c, Component::Image(_)));
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(has_image);
     }
 }
