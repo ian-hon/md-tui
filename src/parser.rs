@@ -15,6 +15,7 @@ use pest::{
 use pest_derive::Parser;
 use ratatui::style::Color;
 
+use crate::latex;
 use crate::nodes::{
     image::ImageComponent,
     root::{Component, ComponentRoot},
@@ -100,6 +101,9 @@ fn parse_text(pair: Pair<'_, Rule>) -> ParseNode {
             .lines()
             .take_while(|line| line.trim().is_empty())
             .count();
+    if pair.as_rule() == Rule::latex {
+        return latex_node(pair, source_line);
+    }
     let content = if pair.as_rule() == Rule::code_line {
         pair.as_str().replace('\t', "    ").replace('\r', "")
     } else {
@@ -109,6 +113,35 @@ fn parse_text(pair: Pair<'_, Rule>) -> ParseNode {
     let children = parse_node_children(pair.into_inner());
     component.add_children(children);
     component
+}
+
+/// A `$...$` span as words of Unicode text (see `latex::to_unicode`).
+///
+/// The `latex` rule swallows the whitespace before the `$`, so it is put back as its own word.
+/// Otherwise "Inline $E$" would render as "InlineE".
+fn latex_node(pair: Pair<'_, Rule>, source_line: usize) -> ParseNode {
+    let leading_space = pair.as_str().starts_with(char::is_whitespace);
+    let mut source = String::new();
+    for word in pair.clone().into_inner().filter(|p| p.as_rule() == Rule::latex_word) {
+        let text = word.as_str();
+        if !source.is_empty() && !text.starts_with(char::is_whitespace) {
+            source.push(' ');
+        }
+        source.push_str(text);
+    }
+
+    let mut children = Vec::new();
+    if leading_space {
+        children.push(ParseNode::new(MdParseEnum::Word, " ".to_owned()));
+    }
+    for (i, word) in latex::to_unicode(&source).split_whitespace().enumerate() {
+        let content = if i == 0 { word.to_owned() } else { format!(" {word}") };
+        children.push(ParseNode::new(MdParseEnum::Word, content));
+    }
+
+    let mut node = ParseNode::new_at_line(pair.as_rule().into(), pair.as_str().replace('\n', " "), source_line);
+    node.add_children(children);
+    node
 }
 
 fn parse_node_children(pair: Pairs<'_, Rule>) -> Vec<ParseNode> {
@@ -1715,5 +1748,17 @@ mod tests {
             .any(|c| matches!(c, Component::Image(_)));
         std::fs::remove_dir_all(&dir).ok();
         assert!(has_image);
+    }
+
+    #[test]
+    fn latex_becomes_unicode_and_keeps_the_space_before_it() {
+        let root = parse_markdown(None, "Inline $E = mc^2$ and $\\frac{a}{b} + \\alpha^2$ here.\n", 80);
+        let text: String = root
+            .words()
+            .iter()
+            .map(|w| w.content())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Inline E = mc² and a/b + α² here."), "got: {text}");
     }
 }
