@@ -28,7 +28,7 @@ files. It focuses on keyboard navigation and functional link navigation.
 - File tree for browsing Markdown files
 - Search and link selection modes
 - Optional image rendering, depending on terminal support
-- LaTeX math (`$...$`, `$$...$$`, `$$` blocks over several lines) typeset as images in terminals with
+- LaTeX math (`$...$`, `$$...$$`, `\[...\]`, bare `\begin{align}`/`equation`/`gather` blocks, all over several lines if you like) typeset as images in terminals with
   Kitty graphics (Ghostty, Kitty), including through tmux; plain Unicode text (`E = mc²`, `α/β`)
   everywhere else. Chemistry (`\ce{...}`) works too.
 

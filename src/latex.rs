@@ -7,22 +7,39 @@
 
 use std::borrow::Cow;
 
-/// Joins a `$$ ... $$` block written over several lines into one line, so the parser sees it whole.
-/// The block's other lines become blank, which keeps every later line at the same line number.
+/// Display-math environments that are written bare, without `$$` around them.
+const DISPLAY_ENVIRONMENTS: &[&str] = &[
+    "align",
+    "alignat",
+    "flalign",
+    "equation",
+    "gather",
+    "multline",
+    "eqnarray",
+    "displaymath",
+];
+
+/// Rewrites display math written in any of these forms into one `$$...$$` line:
+/// `$$ ... $$` and `\[ ... \]` (on one line or several), and a bare `\begin{align} ... \end{align}`.
+/// A block's other lines become blank, which keeps every later line at the same line number.
 ///
 /// Eg:
 /// ```text
 /// before:        after:
-/// $$             $$x = 1 + 2$$
+/// \[             $$x = 1 + 2$$
 /// x = 1 +        (blank)
 /// 2              (blank)
-/// $$             (blank)
+/// \]             (blank)
 /// ```
-/// Fenced code is left alone, and so is a `$$` that never closes.
+/// Quote (`>`) and indentation prefixes are kept. Fenced code is left alone, and so are a block that
+/// never closes, one with a blank line inside, and a single-line `$$x$$` (the parser reads those).
 #[must_use]
 pub fn join_display_blocks(markdown: &str) -> Cow<'_, str> {
     const MAX_BLOCK_LINES: usize = 60;
-    if !markdown.contains("$$") {
+    let may_have_blocks = ["$$", "\\[", "\\begin{"]
+        .iter()
+        .any(|m| markdown.contains(m));
+    if !may_have_blocks {
         return Cow::Borrowed(markdown);
     }
     let lines: Vec<&str> = markdown.lines().collect();
@@ -32,18 +49,16 @@ pub fn join_display_blocks(markdown: &str) -> Cow<'_, str> {
     let mut changed = false;
     while i < lines.len() {
         let line = lines[i];
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        let (prefix, content) = split_prefix(line);
+        if content.starts_with("```") || content.starts_with("~~~") {
             in_fence = !in_fence;
         }
-        let opens = !in_fence && trimmed.starts_with("$$") && !trimmed[2..].contains("$$");
-        let block = opens
-            .then(|| display_block_end(&lines, i, MAX_BLOCK_LINES))
+        let block = (!in_fence)
+            .then(|| display_block_at(&lines, i, MAX_BLOCK_LINES))
             .flatten();
         if let Some((end, body)) = block {
-            let indent = &line[..line.len() - line.trim_start().len()];
-            out.push(format!("{indent}$${body}$$"));
-            out.extend((i + 1..=end).map(|_| String::new()));
+            out.push(format!("{prefix}$${body}$$"));
+            out.extend((i + 1..=end).map(|_| prefix.trim_end().to_owned()));
             i = end + 1;
             changed = true;
         } else {
@@ -61,29 +76,120 @@ pub fn join_display_blocks(markdown: &str) -> Cow<'_, str> {
     Cow::Owned(joined)
 }
 
-/// For a block opening on `lines[start]`: the index of its closing line and the text between the
-/// `$$`s on one line. `None` if it doesn't close soon enough or runs into a blank line.
-fn display_block_end(lines: &[&str], start: usize, max_lines: usize) -> Option<(usize, String)> {
-    let mut parts: Vec<&str> = vec![lines[start].trim()[2..].trim()];
-    for (offset, line) in lines.iter().enumerate().skip(start + 1).take(max_lines) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+/// A line split into its leading indentation and `>` quote marks, and the rest.
+fn split_prefix(line: &str) -> (&str, &str) {
+    let content = line.trim_start_matches(|c: char| c.is_whitespace() || c == '>');
+    (&line[..line.len() - content.len()], content.trim_end())
+}
+
+/// How a block opens and closes, and whether the delimiters belong to the formula itself.
+struct Delimiters {
+    close: String,
+    /// Bytes of the opener to drop (`$$`, `\[`); 0 when the opener is part of the formula.
+    skip: usize,
+    /// Whether the closer is part of the formula (`\end{align}`).
+    keep_close: bool,
+    /// The environment's name, for `\begin{name}`.
+    environment: Option<String>,
+}
+
+fn delimiters(content: &str) -> Option<Delimiters> {
+    if content.starts_with("$$") {
+        return Some(Delimiters {
+            close: "$$".into(),
+            skip: 2,
+            keep_close: false,
+            environment: None,
+        });
+    }
+    if content.starts_with("\\[") {
+        return Some(Delimiters {
+            close: "\\]".into(),
+            skip: 2,
+            keep_close: false,
+            environment: None,
+        });
+    }
+    let env = content.strip_prefix("\\begin{")?;
+    let name = &env[..env.find('}')?];
+    let base = name.strip_suffix('*').unwrap_or(name);
+    DISPLAY_ENVIRONMENTS.contains(&base).then(|| Delimiters {
+        close: format!("\\end{{{name}}}"),
+        skip: 0,
+        keep_close: true,
+        environment: Some(name.to_owned()),
+    })
+}
+
+/// Environments the renderer lacks, rewritten as close ones it has:
+/// `equation` -> nothing (`$$` is already one equation), `multline` -> `gather`, `eqnarray`/`flalign` -> `align`.
+fn rewrite_environment(body: &str, name: &str) -> String {
+    let (base, star) = name.strip_suffix('*').map_or((name, ""), |b| (b, "*"));
+    let begin = format!("\\begin{{{name}}}");
+    let end = format!("\\end{{{name}}}");
+    let replacement = match base {
+        "equation" | "displaymath" => {
+            return body
+                .replacen(&begin, "", 1)
+                .replacen(&end, "", 1)
+                .trim()
+                .to_owned();
+        }
+        "multline" => "gather",
+        "eqnarray" | "flalign" => "align",
+        _ => return body.to_owned(),
+    };
+    body.replacen(&begin, &format!("\\begin{{{replacement}{star}}}"), 1)
+        .replacen(&end, &format!("\\end{{{replacement}{star}}}"), 1)
+}
+
+/// For a display block opening on `lines[start]`: the index of its closing line and its text on one
+/// line. `None` if there is no block here, it doesn't close soon enough, or it holds a blank line.
+fn display_block_at(lines: &[&str], start: usize, max_lines: usize) -> Option<(usize, String)> {
+    let (_, content) = split_prefix(lines[start]);
+    let delimiters = delimiters(content)?;
+    let opening = &content[delimiters.skip..];
+    let single_line = opening.contains(delimiters.close.as_str());
+    // `$$x$$` alone on a line is the parser's job; `\[x\]` and bare environments are not.
+    if single_line && delimiters.close == "$$" {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    for (offset, line) in lines.iter().enumerate().skip(start).take(max_lines) {
+        let text = if offset == start {
+            opening
+        } else {
+            split_prefix(line).1
+        };
+        if text.is_empty() && offset > start {
             return None;
         }
-        if let Some(before) = trimmed.strip_suffix("$$") {
-            parts.push(before.trim());
-            let body = parts
-                .iter()
-                .filter(|p| !p.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" ");
-            return (!body.is_empty()).then_some((offset, body));
-        }
-        if trimmed.contains("$$") {
+        let Some(at) = text.find(delimiters.close.as_str()) else {
+            parts.push(text);
+            continue;
+        };
+        let after = &text[at + delimiters.close.len()..];
+        if !after.trim().is_empty() {
             return None;
         }
-        parts.push(trimmed);
+        let end = if delimiters.keep_close {
+            at + delimiters.close.len()
+        } else {
+            at
+        };
+        parts.push(&text[..end]);
+        let body = parts
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let body = match &delimiters.environment {
+            Some(name) => rewrite_environment(&body, name),
+            None => body,
+        };
+        return (!body.is_empty()).then_some((offset, body));
     }
     None
 }
@@ -505,6 +611,58 @@ mod tests {
     #[test]
     fn joins_when_the_delimiters_share_lines_with_the_formula() {
         assert_eq!(join_display_blocks("$$ a\n+ b $$\n"), "$$a + b$$\n\n");
+    }
+
+    #[test]
+    fn joins_bracket_blocks_one_line_or_several() {
+        assert_eq!(join_display_blocks("\\[ a = b \\]\n"), "$$a = b$$\n");
+        assert_eq!(join_display_blocks("\\[\na = b\n\\]\n"), "$$a = b$$\n\n\n");
+    }
+
+    #[test]
+    fn wraps_bare_display_environments() {
+        let md = "\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}\n";
+        assert_eq!(
+            join_display_blocks(md),
+            "$$\\begin{align} a &= b \\\\ c &= d \\end{align}$$\n\n\n\n"
+        );
+    }
+
+    #[test]
+    fn rewrites_environments_the_renderer_lacks() {
+        // equation is one equation already; the others become the closest supported environment.
+        assert_eq!(
+            join_display_blocks("\\begin{equation*} x \\end{equation*}\n"),
+            "$$x$$\n"
+        );
+        assert_eq!(
+            join_display_blocks("\\begin{multline}\na \\\\ b\n\\end{multline}\n"),
+            "$$\\begin{gather} a \\\\ b \\end{gather}$$\n\n\n"
+        );
+        assert_eq!(
+            join_display_blocks("\\begin{eqnarray*} a &=& b \\end{eqnarray*}\n"),
+            "$$\\begin{align*} a &=& b \\end{align*}$$\n"
+        );
+    }
+
+    #[test]
+    fn keeps_quote_and_indent_prefixes() {
+        assert_eq!(
+            join_display_blocks("> $$\n> a = b\n> $$\n"),
+            "> $$a = b$$\n>\n>\n"
+        );
+        assert_eq!(join_display_blocks("  $$\n  a\n  $$\n"), "  $$a$$\n\n\n");
+    }
+
+    #[test]
+    fn leaves_blocks_with_blank_lines_and_other_environments_alone() {
+        for md in [
+            "\\[\na\n\nb\n\\]\n",
+            "\\begin{pmatrix} a \\end{pmatrix}\n",
+            "\\begin{align}\nnever closes\n",
+        ] {
+            assert_eq!(join_display_blocks(md), md, "{md:?}");
+        }
     }
 
     #[test]

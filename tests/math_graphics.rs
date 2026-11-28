@@ -108,3 +108,19 @@ fn a_formula_too_wide_to_be_inline_falls_back_to_text() {
     );
     assert!(text(&root).contains("x₀ + x₁"), "{:?}", text(&root));
 }
+
+#[test]
+fn common_multi_line_forms_are_all_blocks() {
+    let forms = [
+        "\\[\na = b\n\\]\n",
+        "\\[ a = b \\]\n",
+        "\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}\n",
+        "\\begin{equation}\nE = mc^2\n\\end{equation}\n",
+        "\\begin{multline}\na + b \\\\\n+ c\n\\end{multline}\n",
+        "$$\n\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}\n$$\n",
+    ];
+    for md in forms {
+        let root = parse(md);
+        assert_eq!(images(&root).len(), 1, "{md:?} -> text: {}", text(&root));
+    }
+}
