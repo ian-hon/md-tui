@@ -78,7 +78,7 @@ code_line             =  { NEWLINE ~ (c_line_char | WHITESPACE_S)* }
 indented_code_line    =  { NEWLINE ~ ("    " | "\t") ~ " "* ~ (!(NEWLINE) ~ ANY)* }
 indented_code_newline =  { NEWLINE }
 latex                 =  {
-    NEWLINE? ~ WHITESPACE_S* ~ !"\\" ~ "$"+ ~ !" " ~ latex_word ~ (latex_word | (NEWLINE ~ quote_prefix?))* ~ "$"+ ~ !ASCII_ALPHANUMERIC
+    NEWLINE? ~ WHITESPACE_S* ~ !"\\" ~ "$"+ ~ !" " ~ latex_word ~ (latex_word | (NEWLINE ~ !NEWLINE ~ quote_prefix? ~ latex_word))* ~ "$"+ ~ !ASCII_ALPHANUMERIC
 }
 link                  =  { NEWLINE? ~ WHITESPACE_S* ~ (link_line | wiki_link | inline_link_wrapper) }
 link_line             = _{ "[" ~ (link_word | NEWLINE)+ ~ "]" ~ "(" ~ link_data+ ~ ")" }

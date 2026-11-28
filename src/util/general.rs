@@ -18,6 +18,9 @@ pub struct GeneralConfig {
     pub table_row_lines: bool,
     pub mouse_scroll: bool,
     pub image_max_height: u16,
+    pub math_images: bool,
+    pub math_scale: f32,
+    pub math_color: [u8; 3],
     pub remember_position: bool,
     pub position_cache_ttl_minutes: u64,
     pub escape_quits: bool,
@@ -83,12 +86,31 @@ fn general_config(settings: &Config) -> GeneralConfig {
         table_row_lines: settings.get::<bool>("table_row_lines").unwrap_or(false),
         mouse_scroll: settings.get::<bool>("mouse_scroll").unwrap_or(true),
         image_max_height: settings.get::<u16>("image_max_height").unwrap_or(20).max(1),
+        math_images: settings.get::<bool>("math_images").unwrap_or(true),
+        math_scale: settings
+            .get::<f64>("math_scale")
+            .map_or(0.9, |v| v.clamp(0.3, 3.0) as f32),
+        math_color: settings
+            .get::<String>("math_color")
+            .ok()
+            .and_then(|hex| parse_hex_color(&hex))
+            .unwrap_or([255, 255, 255]),
         remember_position: settings.get::<bool>("remember_position").unwrap_or(true),
         position_cache_ttl_minutes: settings
             .get::<u64>("position_cache_ttl_minutes")
             .unwrap_or(60),
         escape_quits: settings.get::<bool>("escape_quits").unwrap_or(false),
     }
+}
+
+/// `#rrggbb` (or `rrggbb`) as RGB.
+fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 /// The full path option is the more specific of the two, so it shows the header by itself.
@@ -102,6 +124,14 @@ fn shows_document_header(settings: &Config) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_hex_colours() {
+        assert_eq!(parse_hex_color("#ff8000"), Some([255, 128, 0]));
+        assert_eq!(parse_hex_color("00ff00"), Some([0, 255, 0]));
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("zzzzzz"), None);
+    }
 
     fn shows_header_with(document_header: bool, full_path: bool) -> bool {
         let settings = Config::builder()

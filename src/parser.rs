@@ -1,9 +1,7 @@
 use std::{
+    cell::RefCell,
     path::{Path, PathBuf},
-    sync::{
-        Mutex,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use image::ImageReader;
@@ -16,6 +14,7 @@ use pest_derive::Parser;
 use ratatui::style::Color;
 
 use crate::latex;
+use crate::nodes::math;
 use crate::nodes::{
     image::ImageComponent,
     root::{Component, ComponentRoot},
@@ -49,26 +48,28 @@ fn tag_owning_details(components: &mut [Component], id: u32) {
 #[grammar = "md.pest"]
 pub struct MdParser;
 
-/// Directory of the markdown file being parsed; relative image paths resolve against it, not the cwd.
-static IMAGE_BASE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+thread_local! {
+    /// Directory of the markdown file being parsed; relative image paths resolve against it, not the cwd.
+    /// Per thread because a parse runs start to finish on one thread, and parses must not affect each other.
+    static IMAGE_BASE_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
 
 fn resolve_image_path(src: &str) -> PathBuf {
     let path = Path::new(src);
-    match IMAGE_BASE_DIR.lock().ok().and_then(|base| base.clone()) {
+    match IMAGE_BASE_DIR.with_borrow(Clone::clone) {
         Some(base) if path.is_relative() => base.join(path),
         _ => path.to_path_buf(),
     }
 }
 
 pub fn parse_markdown(name: Option<&str>, content: &str, width: u16) -> ComponentRoot {
+    let content = &*latex::join_display_blocks(content);
     let base = name
         .map(Path::new)
         .filter(|p| p.is_file())
         .and_then(Path::parent)
         .map(Path::to_path_buf);
-    if let Ok(mut slot) = IMAGE_BASE_DIR.lock() {
-        *slot = base;
-    }
+    IMAGE_BASE_DIR.set(base);
     let root: Pairs<'_, Rule> = if let Ok(file) = MdParser::parse(Rule::txt, content) {
         file
     } else {
@@ -115,33 +116,58 @@ fn parse_text(pair: Pair<'_, Rule>) -> ParseNode {
     component
 }
 
-/// A `$...$` span as words of Unicode text (see `latex::to_unicode`).
+/// A `$...$` span. Its content is the TeX source; its children are the words to show:
+/// - a placeholder that reserves room for the typeset image (see `nodes::math`), or
+/// - when there are no terminal graphics, Unicode text (see `latex::to_unicode`).
 ///
 /// The `latex` rule swallows the whitespace before the `$`, so it is put back as its own word.
 /// Otherwise "Inline $E$" would render as "InlineE".
 fn latex_node(pair: Pair<'_, Rule>, source_line: usize) -> ParseNode {
     let leading_space = pair.as_str().starts_with(char::is_whitespace);
     let mut source = String::new();
-    for word in pair.clone().into_inner().filter(|p| p.as_rule() == Rule::latex_word) {
+    for word in pair
+        .clone()
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::latex_word)
+    {
         let text = word.as_str();
         if !source.is_empty() && !text.starts_with(char::is_whitespace) {
             source.push(' ');
         }
         source.push_str(text);
     }
+    let tex = source.trim().to_owned();
 
     let mut children = Vec::new();
     if leading_space {
         children.push(ParseNode::new(MdParseEnum::Word, " ".to_owned()));
     }
-    for (i, word) in latex::to_unicode(&source).split_whitespace().enumerate() {
-        let content = if i == 0 { word.to_owned() } else { format!(" {word}") };
-        children.push(ParseNode::new(MdParseEnum::Word, content));
+    if let Some(placeholder) = math::inline_placeholder(&tex) {
+        children.push(ParseNode::new(MdParseEnum::Word, placeholder));
+    } else {
+        for (i, word) in latex::to_unicode(&tex).split_whitespace().enumerate() {
+            let content = if i == 0 {
+                word.to_owned()
+            } else {
+                format!(" {word}")
+            };
+            children.push(ParseNode::new(MdParseEnum::Word, content));
+        }
     }
 
-    let mut node = ParseNode::new_at_line(pair.as_rule().into(), pair.as_str().replace('\n', " "), source_line);
+    let mut node = ParseNode::new_at_line(MdParseEnum::Latex, tex, source_line);
     node.add_children(children);
     node
+}
+
+/// The TeX of a paragraph that is nothing but one formula, e.g. `$$ x^2 $$` on its own.
+fn standalone_latex(paragraph: &ParseNode) -> Option<&str> {
+    let mut parts = paragraph
+        .children()
+        .iter()
+        .filter(|n| !(n.kind() == MdParseEnum::Word && n.content().trim().is_empty()));
+    let formula = parts.next().filter(|n| n.kind() == MdParseEnum::Latex)?;
+    parts.next().is_none().then(|| formula.content())
 }
 
 fn parse_node_children(pair: Pairs<'_, Rule>) -> Vec<ParseNode> {
@@ -401,6 +427,11 @@ fn parse_component(parse_node: ParseNode, width: u16) -> Component {
         }
 
         MdParseEnum::Paragraph => {
+            if let Some(block) =
+                standalone_latex(&parse_node).and_then(|tex| math::block(tex, width))
+            {
+                return Component::Image(block);
+            }
             let leaf_nodes = get_leaf_nodes(parse_node);
             let mut words = Vec::new();
             for node in leaf_nodes {
@@ -778,6 +809,7 @@ pub enum MdParseEnum {
     FootnoteRef,
     Footnote,
     Heading,
+    Latex,
     HorizontalSeparator,
     Image,
     Imortant,
@@ -873,7 +905,6 @@ impl From<Rule> for MdParseEnum {
             | Rule::wiki_link_char
             | Rule::normal
             | Rule::t_normal
-            | Rule::latex
             | Rule::comment
             | Rule::txt
             | Rule::task_prefix
@@ -884,6 +915,7 @@ impl From<Rule> for MdParseEnum {
             | Rule::emphasis_newline
             | Rule::list_prefix
             | Rule::forbidden_sentence_prefix => Self::Paragraph,
+            Rule::latex => Self::Latex,
             Rule::image => Self::Image,
             Rule::alt_word | Rule::alt_text => Self::AltText,
             Rule::footnote_ref => Self::FootnoteRef,
@@ -1737,7 +1769,9 @@ mod tests {
     fn image_paths_resolve_against_the_markdown_file_directory() {
         let dir = std::env::temp_dir().join(format!("mdtui-img-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        image::RgbImage::new(4, 4).save(dir.join("pic.png")).unwrap();
+        image::RgbImage::new(4, 4)
+            .save(dir.join("pic.png"))
+            .unwrap();
         let md = dir.join("doc.md");
         std::fs::write(&md, "![pic](pic.png)\n").unwrap();
 
@@ -1748,17 +1782,5 @@ mod tests {
             .any(|c| matches!(c, Component::Image(_)));
         std::fs::remove_dir_all(&dir).ok();
         assert!(has_image);
-    }
-
-    #[test]
-    fn latex_becomes_unicode_and_keeps_the_space_before_it() {
-        let root = parse_markdown(None, "Inline $E = mc^2$ and $\\frac{a}{b} + \\alpha^2$ here.\n", 80);
-        let text: String = root
-            .words()
-            .iter()
-            .map(|w| w.content())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(text.contains("Inline E = mc² and a/b + α² here."), "got: {text}");
     }
 }

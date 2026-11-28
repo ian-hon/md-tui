@@ -49,6 +49,10 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 config = { version = "0.15.27", default-features = false, features = ["toml"] }
 dirs = "7.0.0"
 image = { version = "0.25.10", default-features = false }
+ratex-layout = "0.1.16"
+ratex-parser = "0.1.16"
+ratex-render = { version = "0.1.16", features = ["embed-fonts"] }
+ratex-types = "0.1.16"
 itertools = "0.15.0"
 notify = "8.2.1"
 open = "5.4.5"

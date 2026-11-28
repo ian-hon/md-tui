@@ -24,7 +24,10 @@ use md_tui::{
 
 use crossterm::{
     cursor,
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -705,13 +708,16 @@ fn render_markdown(f: &mut Frame, app: &App, markdown: &mut ComponentRoot) {
 
                 let y = i32::from(img.y_offset()) - i32::from(img.scroll_offset());
                 let y = y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+                let x = img.x_offset().min(i16::MAX as u16) as i16;
                 if let Some(image) = img.image() {
-                    let position = SignedPosition::from((0, y));
+                    let position = SignedPosition::from((x, y));
                     f.render_widget(SlicedImage::new(image, position), area);
                 }
             }
         }
     }
+
+    md_tui::nodes::math::overlay(f, area);
 
     if GENERAL_CONFIG.scrollbar && markdown.height() > area.height {
         // Draw beside the document viewport. Drawing at `area.right() - 1`

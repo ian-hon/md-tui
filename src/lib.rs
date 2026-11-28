@@ -1,6 +1,7 @@
 pub mod boxes;
 pub mod event_handler;
 pub mod latex;
+pub mod math;
 pub mod nodes;
 pub mod pages;
 pub mod parser;

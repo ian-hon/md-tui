@@ -84,6 +84,7 @@ impl From<MdParseEnum> for WordType {
             | MdParseEnum::DetailsOpenAttr
             | MdParseEnum::DetailsSummary
             | MdParseEnum::Image
+            | MdParseEnum::Latex
             | MdParseEnum::ItalicStr
             | MdParseEnum::ListContainer
             | MdParseEnum::OrderedList

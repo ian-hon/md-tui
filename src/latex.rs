@@ -5,6 +5,89 @@
 //! It covers the common cases (Greek, operators, super/subscripts, fractions, roots, accents).
 //! Anything it doesn't know is left as written, so the source is still readable.
 
+use std::borrow::Cow;
+
+/// Joins a `$$ ... $$` block written over several lines into one line, so the parser sees it whole.
+/// The block's other lines become blank, which keeps every later line at the same line number.
+///
+/// Eg:
+/// ```text
+/// before:        after:
+/// $$             $$x = 1 + 2$$
+/// x = 1 +        (blank)
+/// 2              (blank)
+/// $$             (blank)
+/// ```
+/// Fenced code is left alone, and so is a `$$` that never closes.
+#[must_use]
+pub fn join_display_blocks(markdown: &str) -> Cow<'_, str> {
+    const MAX_BLOCK_LINES: usize = 60;
+    if !markdown.contains("$$") {
+        return Cow::Borrowed(markdown);
+    }
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_fence = false;
+    let mut i = 0;
+    let mut changed = false;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        let opens = !in_fence && trimmed.starts_with("$$") && !trimmed[2..].contains("$$");
+        let block = opens
+            .then(|| display_block_end(&lines, i, MAX_BLOCK_LINES))
+            .flatten();
+        if let Some((end, body)) = block {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            out.push(format!("{indent}$${body}$$"));
+            out.extend((i + 1..=end).map(|_| String::new()));
+            i = end + 1;
+            changed = true;
+        } else {
+            out.push(line.to_owned());
+            i += 1;
+        }
+    }
+    if !changed {
+        return Cow::Borrowed(markdown);
+    }
+    let mut joined = out.join("\n");
+    if markdown.ends_with('\n') {
+        joined.push('\n');
+    }
+    Cow::Owned(joined)
+}
+
+/// For a block opening on `lines[start]`: the index of its closing line and the text between the
+/// `$$`s on one line. `None` if it doesn't close soon enough or runs into a blank line.
+fn display_block_end(lines: &[&str], start: usize, max_lines: usize) -> Option<(usize, String)> {
+    let mut parts: Vec<&str> = vec![lines[start].trim()[2..].trim()];
+    for (offset, line) in lines.iter().enumerate().skip(start + 1).take(max_lines) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if let Some(before) = trimmed.strip_suffix("$$") {
+            parts.push(before.trim());
+            let body = parts
+                .iter()
+                .filter(|p| !p.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            return (!body.is_empty()).then_some((offset, body));
+        }
+        if trimmed.contains("$$") {
+            return None;
+        }
+        parts.push(trimmed);
+    }
+    None
+}
+
 pub fn to_unicode(src: &str) -> String {
     let mut parser = Parser {
         chars: src.chars().collect(),
@@ -127,8 +210,8 @@ impl Parser {
                 let prefix = index.map(|n| script(&n, true)).unwrap_or_default();
                 format!("{prefix}√{}", wrap(&body))
             }
-            "text" | "textbf" | "textit" | "mathrm" | "mathbf" | "mathit" | "mathsf" | "mathcal"
-            | "operatorname" | "boldsymbol" | "bm" => self.arg(),
+            "text" | "textbf" | "textit" | "mathrm" | "mathbf" | "mathit" | "mathsf"
+            | "mathcal" | "operatorname" | "boldsymbol" | "bm" => self.arg(),
             "mathbb" => self.arg().chars().map(blackboard).collect(),
             "hat" => self.accent('\u{0302}'),
             "bar" | "overline" => self.accent('\u{0304}'),
@@ -409,7 +492,32 @@ fn symbol(name: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::to_unicode;
+    use super::{join_display_blocks, to_unicode};
+
+    #[test]
+    fn joins_a_multi_line_display_block_and_keeps_line_numbers() {
+        let md = "Before\n\n$$\nx = 1 +\n2\n$$\n\nAfter\n";
+        let joined = join_display_blocks(md);
+        assert_eq!(joined, "Before\n\n$$x = 1 + 2$$\n\n\n\n\nAfter\n");
+        assert_eq!(joined.lines().count(), md.lines().count());
+    }
+
+    #[test]
+    fn joins_when_the_delimiters_share_lines_with_the_formula() {
+        assert_eq!(join_display_blocks("$$ a\n+ b $$\n"), "$$a + b$$\n\n");
+    }
+
+    #[test]
+    fn leaves_single_line_blocks_fenced_code_and_unclosed_blocks_alone() {
+        for md in [
+            "$$x$$\n",
+            "```\n$$\nx\n$$\n```\n",
+            "$$\nx\n\nnever closes $$\n",
+            "no math\n",
+        ] {
+            assert_eq!(join_display_blocks(md), md, "{md:?}");
+        }
+    }
 
     #[test]
     fn greek_and_operators() {
@@ -448,7 +556,12 @@ mod tests {
 
     #[test]
     fn wrappers_accents_and_unknown_commands() {
-        let words = |src: &str| to_unicode(src).split_whitespace().collect::<Vec<_>>().join(" ");
+        let words = |src: &str| {
+            to_unicode(src)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         assert_eq!(words(r"\mathbb{R}^n \text{ and } \mathbf{v}"), "ℝⁿ and v");
         assert_eq!(to_unicode(r"\sin x"), "sin x");
         assert_eq!(to_unicode(r"\hat{x}"), "x\u{0302}");

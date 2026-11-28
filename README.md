@@ -28,6 +28,9 @@ files. It focuses on keyboard navigation and functional link navigation.
 - File tree for browsing Markdown files
 - Search and link selection modes
 - Optional image rendering, depending on terminal support
+- LaTeX math (`$...$`, `$$...$$`, `$$` blocks over several lines) typeset as images in terminals with
+  Kitty graphics (Ghostty, Kitty), including through tmux; plain Unicode text (`E = mc²`, `α/β`)
+  everywhere else. Chemistry (`\ce{...}`) works too.
 
 ## Installation
 
@@ -187,6 +190,11 @@ document_header_full_path = false # true shows the absolute document path, with 
 heading_style = "hashes" # "bars" renders H2-H6 with indented accent bars
 scrollbar = true # false hides the document position indicator
 image_max_height = 20 # maximum terminal rows used by an inline image
+math_images = true # typeset math as images; false (or no graphics support) shows Unicode text
+math_scale = 0.9 # formula size relative to the text; ~0.9 matches it
+math_color = "#ffffff" # formula colour; set it to your terminal's text colour
+image_protocol = "kitty" # force kitty, sixel, iterm2 or halfblocks when detection picks the wrong one
+cell_size = "10x20" # terminal cell size in pixels, when detection gets it wrong
 remember_position = true # restore recently viewed documents at their last position
 position_cache_ttl_minutes = 60 # ignore older positions; 0 means never expire
 escape_quits = false # true makes Escape quit once nothing is selected or searched
